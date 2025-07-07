@@ -1,104 +1,128 @@
-import time
 import requests
-import random
 import os
+import time
+import random
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
-OWNER_ID = -231062776  # ID сообщества ВК (с минусом)
+OWNER_ID = -231062776
 API_VERSION = '5.131'
-INTERVAL_SECONDS = 3 * 3600 + 26 * 60  # 3 часа 26 минут
-
+CHECK_INTERVAL = 37 * 60  # 37 минут
 ACCESS_TOKEN = os.environ.get("ACCESS_TOKEN")
+COMMENTED_FILE = "commented.txt"
+
 if not ACCESS_TOKEN:
     raise RuntimeError("❌ Переменная окружения ACCESS_TOKEN не задана.")
 
-def load_last_post_id():
-    if os.path.exists("last_post.txt"):
-        with open("last_post.txt", "r") as f:
-            try:
-                return int(f.read().strip())
-            except:
-                return 0
-    return 0
+def load_commented_ids():
+    if not os.path.exists(COMMENTED_FILE):
+        return set()
+    with open(COMMENTED_FILE, "r") as f:
+        return set(int(line.strip()) for line in f if line.strip().isdigit())
 
-def save_last_post_id(post_id):
-    with open("last_post.txt", "w") as f:
-        f.write(str(post_id))
+def save_commented_id(post_id):
+    with open(COMMENTED_FILE, "a") as f:
+        f.write(f"{post_id}\n")
 
-def get_latest_post_id():
-    response = requests.get("https://api.vk.com/method/wall.get", params={
-        "owner_id": OWNER_ID,
-        "count": 5,
-        "access_token": ACCESS_TOKEN,
-        "v": API_VERSION
-    })
-    data = response.json()
-    try:
-        for item in data['response']['items']:
-            if not item.get('is_pinned', 0):  # игнорируем закреплённые посты
-                return item['id']
-    except Exception as e:
-        print("Ошибка при получении поста:", data)
-        return None
+def get_all_post_ids():
+    ids = []
+    offset = 0
+    while True:
+        r = requests.get("https://api.vk.com/method/wall.get", params={
+            "owner_id": OWNER_ID,
+            "count": 100,
+            "offset": offset,
+            "access_token": ACCESS_TOKEN,
+            "v": API_VERSION
+        })
+        data = r.json()
+        if "error" in data:
+            print("Ошибка VK:", data)
+            break
+        items = data.get("response", {}).get("items", [])
+        for post in items:
+            if not post.get("is_pinned", 0):
+                ids.append(post["id"])
+        if len(items) < 100:
+            break
+        offset += 100
+    return ids
 
 def get_random_comment():
     try:
         with open("comments.txt", "r", encoding="utf-8") as f:
             lines = [line.strip() for line in f if line.strip()]
-        if not lines:
-            raise ValueError("Файл comments.txt пуст.")
-        return random.choice(lines)
-    except Exception as e:
-        print("Ошибка чтения comments.txt:", e)
+        return random.choice(lines) if lines else None
+    except:
         return None
 
-def post_exists(post_id):
-    response = requests.get("https://api.vk.com/method/wall.getById", params={
-        "posts": f"{OWNER_ID}_{post_id}",
-        "access_token": ACCESS_TOKEN,
-        "v": API_VERSION
-    })
-    data = response.json()
-    if "response" in data and len(data["response"]) > 0:
-        return True
-    else:
-        print("❌ Пост не найден или недоступен:", data)
-        return False
-
-def post_comment(post_id, message):
-    response = requests.get("https://api.vk.com/method/wall.createComment", params={
+def is_commented_by_bot(post_id):
+    r = requests.get("https://api.vk.com/method/wall.getComments", params={
         "owner_id": OWNER_ID,
         "post_id": post_id,
-        "message": message,
+        "count": 100,
+        "extended": 1,
         "access_token": ACCESS_TOKEN,
         "v": API_VERSION
     })
-    print("Ответ VK на комментарий:", response.json())
+    data = r.json()
+    try:
+        comments = data["response"]["items"]
+        profiles = data["response"]["profiles"]
+        my_id = next(p["id"] for p in profiles if p["id"] > 0 and "first_name" in p)
+        for c in comments:
+            if c["from_id"] == my_id:
+                return True
+    except:
+        pass
+    return False
 
-def main_loop():
+def post_comment(post_id, msg):
+    r = requests.get("https://api.vk.com/method/wall.createComment", params={
+        "owner_id": OWNER_ID,
+        "post_id": post_id,
+        "message": msg,
+        "access_token": ACCESS_TOKEN,
+        "v": API_VERSION
+    })
+    print("Комментарий к посту", post_id, "->", r.json())
+
+def run_bot_loop():
     while True:
-        print("\n=== Проверка новых постов ===")
-        last_post_id = load_last_post_id()
-        latest_post_id = get_latest_post_id()
+        print("\n🔄 Проверка публикаций")
+        commented_ids = load_commented_ids()
+        post_ids = get_all_post_ids()
 
-        if latest_post_id is None:
-            print("❌ Не удалось получить ID последнего поста.")
-        elif latest_post_id > last_post_id:
-            print(f"🔔 Обнаружен новый пост: ID = {latest_post_id}")
-            if post_exists(latest_post_id):
-                comment = get_random_comment()
-                if comment:
-                    print(f"💬 Публикуем комментарий: {comment}")
-                    post_comment(latest_post_id, comment)
-                else:
-                    print("⚠️ Комментарий не выбран.")
-            else:
-                print(f"⚠️ Пост {latest_post_id} не существует или недоступен.")
-            save_last_post_id(latest_post_id)
-        else:
-            print("✅ Новых постов нет.")
+        for pid in post_ids:
+            if pid in commented_ids:
+                continue
+            if is_commented_by_bot(pid):
+                print(f"⚠️ Уже есть комментарий от бота под постом {pid}")
+                save_commented_id(pid)
+                continue
+            msg = get_random_comment()
+            if msg:
+                print(f"💬 Комментируем пост {pid}: {msg}")
+                post_comment(pid, msg)
+                save_commented_id(pid)
+            time.sleep(2)
 
-        print(f"⏳ Ожидание {INTERVAL_SECONDS // 60} минут...")
-        time.sleep(INTERVAL_SECONDS)
+        print(f"🕒 Ожидание {CHECK_INTERVAL // 60} минут...")
+        time.sleep(CHECK_INTERVAL)
+
+# HTTP-заглушка для Render (порт обязательный)
+class PingHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"VK bot running.")
+
+def run_http_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("", port), PingHandler)
+    print(f"✅ HTTP сервер на порту {port}")
+    server.serve_forever()
 
 if __name__ == "__main__":
-    main_loop()
+    threading.Thread(target=run_http_server, daemon=True).start()
+    run_bot_loop()
