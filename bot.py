@@ -3,7 +3,7 @@ import requests
 import random
 import os
 
-ACCESS_TOKEN = 'vk1.a.JeLPRJys1LhsI8v42TVYXz-TGsgjWOPPwMmw-YlVCUSF80_i4IL-E5CGUw8ThWeTLWD1XzZE4mMcoxhCiZTWlNEC4_o4SAwm7xMW2_nyyL-DROYOQeAuL4cQ2cSLE-xJ_rqtRmqphLO9iSRPLHHKqsd-hGsJoPmG1e9eZJ3QDxbetvpUR_c1eupB8SoYPkozG5SDQ04hkkkmtaq-PfTAbw'
+ACCESS_TOKEN = os.environ.get("ACCESS_TOKEN")
 OWNER_ID = -231062776  # группа
 API_VERSION = '5.131'
 INTERVAL_SECONDS = 3 * 3600 + 26 * 60  # 3 часа 26 минут
